@@ -24,6 +24,10 @@ class ConfigurationTests(unittest.TestCase):
         region = bot.action_region_to_right((400, 300, 300, 30), 1920)
         self.assertEqual(region, (700, 296, 1220, 38))
 
+    def test_class_enrollment_region_preserves_original_right_edge_crop(self):
+        region = bot.class_enrollment_region((400, 300, 42, 26), 1920)
+        self.assertEqual(region, (1700, 300, 220, 26))
+
 
 class ModeTests(unittest.TestCase):
     def test_default_mode_is_dry_run(self):
@@ -101,6 +105,116 @@ class ModeTests(unittest.TestCase):
         move_to.assert_called_once_with(10, 20)
         click.assert_called_once_with()
         keyboard_send.assert_not_called()
+
+
+class LiveEnrollmentFlowTests(unittest.TestCase):
+    def setUp(self):
+        self.original_running = bot.running
+        self.original_courses = bot.cadeira_images
+        bot.running = True
+        bot.cadeira_images = [str(bot.CADEIRA_FOLDER / "a-sp.png")]
+
+    def tearDown(self):
+        bot.running = self.original_running
+        bot.cadeira_images = self.original_courses
+
+    def run_flow(self, matches):
+        events = []
+
+        def center(box):
+            left, top, width, height = box
+            return left + width // 2, top + height // 2
+
+        with patch.object(bot, "locate_reference", side_effect=matches), patch.object(
+            bot.pyautogui, "size", return_value=(1920, 1080)
+        ), patch.object(
+            bot.pyautogui,
+            "center",
+            side_effect=center,
+        ), patch.object(
+            bot.pyautogui,
+            "moveTo",
+            side_effect=lambda x, y: events.append(("move", x, y)),
+        ), patch.object(
+            bot.pyautogui,
+            "click",
+            side_effect=lambda: events.append(("click",)),
+        ), patch.object(
+            bot.pyautogui, "scroll"
+        ), patch.object(
+            bot.keyboard, "send"
+        ) as keyboard_send, patch.object(
+            bot.time, "sleep"
+        ):
+            bot.run_automation_sequence(dry_run=False)
+
+        keyboard_send.assert_not_called()
+        return events
+
+    def assert_action_sequence(self, events, expected):
+        position = 0
+        for event in events:
+            if position < len(expected) and event == expected[position]:
+                position += 1
+        self.assertEqual(position, len(expected), events)
+
+    def test_preferred_live_flow_preserves_checkbox_then_save_clicks(self):
+        open_button = (1700, 300, 78, 22)
+        checkbox = (1750, 500, 20, 20)
+        save_button = (1650, 900, 100, 30)
+        matches = [
+            (300, 200, 240, 20),  # enrollment list
+            (300, 300, 310, 24),  # course
+            open_button,
+            (300, 400, 220, 30),  # class page
+            (300, 500, 42, 26),  # preferred class
+            checkbox,
+            save_button,
+        ]
+
+        events = self.run_flow(matches)
+
+        self.assert_action_sequence(
+            events,
+            [
+                ("move", 1739, 311),
+                ("click",),
+                ("move", 1760, 510),
+                ("click",),
+                ("move", 1700, 915),
+                ("click",),
+            ],
+        )
+
+    def test_fallback_live_flow_preserves_checkbox_then_save_clicks(self):
+        open_button = (1700, 300, 78, 22)
+        fallback_checkbox = (1750, 540, 20, 20)
+        save_button = (1650, 900, 100, 30)
+        matches = [
+            (300, 200, 240, 20),  # enrollment list
+            (300, 300, 310, 24),  # course
+            open_button,
+            (300, 400, 220, 30),  # class page
+            (300, 500, 42, 26),  # preferred class
+            bot.pyautogui.ImageNotFoundException("preferred checkbox unavailable"),
+            (300, 540, 42, 26),  # fallback class
+            fallback_checkbox,
+            save_button,
+        ]
+
+        events = self.run_flow(matches)
+
+        self.assert_action_sequence(
+            events,
+            [
+                ("move", 1739, 311),
+                ("click",),
+                ("move", 1760, 550),
+                ("click",),
+                ("move", 1700, 915),
+                ("click",),
+            ],
+        )
 
 
 class WorkerLifecycleTests(unittest.TestCase):

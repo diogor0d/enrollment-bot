@@ -89,6 +89,18 @@ def action_region_to_right(label_box, screen_width):
     )
 
 
+def class_enrollment_region(label_box, screen_width):
+    """Preserve the original class-checkbox search region."""
+    _, top, _, height = label_box
+    offset = 220
+    return (
+        max(screen_width - offset, 0),
+        top,
+        offset,
+        height,
+    )
+
+
 def complete_enrollment(save_box, dry_run, choice_label):
     """Click Save in live mode, or skip submission and return in dry-run mode."""
     x, y = pyautogui.center(save_box)
@@ -289,7 +301,7 @@ def run_automation_sequence(dry_run):
                         print("Automation stopped before processing turma_box.")
                         break
                     if turma_box:
-                        t_region = action_region_to_right(turma_box, screenWidth)
+                        t_region = class_enrollment_region(turma_box, screenWidth)
                         t_region_left, t_region_top, t_region_width, t_region_height = t_region
                         #preview_region(t_region_left, t_region_top, t_region_width, t_region_height, color="blue")
 
@@ -321,7 +333,10 @@ def run_automation_sequence(dry_run):
                                 except pyautogui.ImageNotFoundException:
                                     turma_box_2 = None
                                 if turma_box_2:
-                                    t2_region = action_region_to_right(turma_box_2, screenWidth)
+                                    t2_region = class_enrollment_region(
+                                        turma_box_2,
+                                        screenWidth,
+                                    )
                                     t2_region_left, t2_region_top, t2_region_width, t2_region_height = t2_region
                                     try:
                                         inscrever_box_2 = locate_reference(
