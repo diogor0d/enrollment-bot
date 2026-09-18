@@ -1,3 +1,5 @@
+name: inforestudante-vacancy-watcher
+
 services:
   vacancy-watcher:
     build: .
