@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "inforestudante-vacancy-watcher"
+version = "0.1.0"
+description = "Fail-closed InforEstudante vacancy watcher"
+requires-python = ">=3.12"
+dependencies = ["playwright==1.63.0"]
+
+[project.scripts]
+vacancy-watcher = "vacancy_watcher.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]

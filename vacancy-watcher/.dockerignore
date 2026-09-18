@@ -1,0 +1,9 @@
+.git
+.venv
+.env
+__pycache__
+*.pyc
+data
+auth-state.json
+state.json
+tests

@@ -1,0 +1,44 @@
+services:
+  vacancy-watcher:
+    build: .
+    init: true
+    shm_size: 256m
+    restart: unless-stopped
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 256
+    mem_limit: 512m
+    cpus: 1.0
+    stop_grace_period: 30s
+    tmpfs:
+      - /tmp:size=256m,mode=1777
+    healthcheck:
+      test: ["CMD", "python", "-m", "vacancy_watcher", "health"]
+      interval: 1m
+      timeout: 10s
+      start_period: 2m
+      retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+    environment:
+      HOME: /tmp/home
+      XDG_CACHE_HOME: /tmp/xdg-cache
+      XDG_CONFIG_HOME: /tmp/xdg-config
+      MODE: ${MODE:-notify}
+      ENABLE_ENROLLMENT: ${ENABLE_ENROLLMENT:-false}
+      ENROLLMENT_ACK: ${ENROLLMENT_ACK:-}
+      STORAGE_STATE_PATH: /data/auth-state.json
+      DATA_PATH: /data/state.json
+      POLL_INTERVAL: ${POLL_INTERVAL:-30}
+      POLL_JITTER: ${POLL_JITTER:-2}
+      AUTH_RETRY_INTERVAL: ${AUTH_RETRY_INTERVAL:-900}
+      STOP_AFTER_SUCCESS: ${STOP_AFTER_SUCCESS:-true}
+      WEBHOOK_URL: ${WEBHOOK_URL:-}
+    volumes:
+      - ./data:/data
