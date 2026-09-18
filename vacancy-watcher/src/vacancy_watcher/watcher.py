@@ -77,6 +77,72 @@ class Watcher:
             # A transient DOM failure is not evidence of authentication; later assertions decide.
             pass
 
+    def authenticate(self, username: str, password: str) -> str:
+        """Create a verified portal session without persisting credentials."""
+
+        if not username or not password or len(username) > 256 or len(password) > 1024:
+            self.state.update(lambda value: value.__setitem__("auth_status", "failed"))
+            return "failed"
+        lock_path = Path(self.settings.data_path).parent / ".vacancy-watcher-cycle.lock"
+        try:
+            with ExclusiveFileLock(lock_path):
+                return self._authenticate_locked(username, password)
+        except LockHeldError:
+            return "busy"
+        finally:
+            # Best effort only: Python strings cannot be reliably zeroed.
+            username = ""
+            password = ""
+
+    def _authenticate_locked(self, username: str, password: str) -> str:
+        try:
+            from playwright.sync_api import sync_playwright
+        except ImportError:
+            self.state.update(lambda value: value.__setitem__("auth_status", "failed"))
+            self.logger.log("error", "portal_authentication_failed", failure_kind="playwright_missing")
+            return "failed"
+
+        self.state.update(lambda value: value.__setitem__("auth_status", "authenticating"))
+        context = None
+        browser = None
+        try:
+            with sync_playwright() as playwright:
+                browser = playwright.chromium.launch(headless=True)
+                context = browser.new_context()
+                page = context.new_page()
+                page.goto(self.settings.list_url, wait_until="domcontentloaded")
+                username_input = page.locator("form#loginFormBean input[name='username']")
+                password_input = page.locator("form#loginFormBean input[name='password']")
+                submit = page.locator("form#loginFormBean input[type='submit']")
+                if username_input.count() != 1 or password_input.count() != 1 or submit.count() != 1:
+                    raise PortalAuthRequired("exact login form is not available")
+                username_input.fill(username)
+                password_input.fill(password)
+                submit.click()
+                page.wait_for_load_state("domcontentloaded")
+                page.goto(self.settings.list_url, wait_until="domcontentloaded")
+                self._authenticated_page(page)
+                find_course_link(page, self.settings)
+                write_json_secure_atomic(Path(self.settings.storage_state_path), context.storage_state())
+                self.state.update(lambda value: value.__setitem__("auth_status", "valid"))
+                self.logger.log("info", "portal_authentication_succeeded")
+                return "valid"
+        except Exception as exc:
+            self.state.update(lambda value: value.__setitem__("auth_status", "failed"))
+            self.logger.log("warning", "portal_authentication_failed", failure_kind=type(exc).__name__)
+            return "failed"
+        finally:
+            if context is not None:
+                try:
+                    context.close()
+                except Exception:
+                    pass
+            if browser is not None:
+                try:
+                    browser.close()
+                except Exception:
+                    pass
+
     def run_once(self) -> str:
         lock_path = Path(self.settings.data_path).parent / ".vacancy-watcher-cycle.lock"
         try:

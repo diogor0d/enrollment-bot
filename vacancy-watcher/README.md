@@ -116,6 +116,15 @@ submission that has already reached the durable `submitting` state. A latched
 manual-intervention state cannot be cleared from the console; verify the
 authoritative enrollment list before repairing state on the host.
 
+When `TLS_ENABLED=true`, the console also provides **Connect university
+account** fields. The username and password are submitted only to this watcher,
+used once by a fresh headless browser to log in at the fixed UC HTTPS origin,
+and then discarded. Only the resulting Playwright session state is written to
+`/data/auth-state.json`. A failed login never replaces a previous session.
+Never enable this form over plain HTTP. The deployment certificate must be
+trusted on the authorized client before entering credentials; do not bypass a
+browser certificate warning.
+
 To explicitly enable autonomous enrollment, supply all gates for that command
 or service and review the risk first:
 

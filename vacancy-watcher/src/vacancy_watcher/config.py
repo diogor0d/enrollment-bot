@@ -22,6 +22,8 @@ UI_HOST = "0.0.0.0"
 UI_PORT = 8080
 LOOPBACK_UI_HOSTS = ("localhost", "127.0.0.1", "::1")
 LOOPBACK_UI_CLIENTS = ("127.0.0.1", "::1")
+TLS_CERT_PATH = Path("data/tls.crt")
+TLS_KEY_PATH = Path("data/tls.key")
 
 
 class ConfigError(ValueError):
@@ -96,6 +98,9 @@ class Settings:
     ui_port: int = UI_PORT
     ui_allowed_hosts: tuple[str, ...] = LOOPBACK_UI_HOSTS
     ui_allowed_clients: tuple[str, ...] = LOOPBACK_UI_CLIENTS
+    tls_enabled: bool = False
+    tls_cert_path: Path = TLS_CERT_PATH
+    tls_key_path: Path = TLS_KEY_PATH
 
     @property
     def enrollment_gate(self) -> bool:
@@ -129,6 +134,9 @@ class Settings:
                 "UI_ALLOWED_HOSTS", LOOPBACK_UI_HOSTS, allow_localhost=True
             ),
             ui_allowed_clients=_env_ip_allowlist("UI_ALLOWED_CLIENTS", LOOPBACK_UI_CLIENTS),
+            tls_enabled=_env_bool("TLS_ENABLED", False),
+            tls_cert_path=Path(os.getenv("TLS_CERT_PATH", str(TLS_CERT_PATH))),
+            tls_key_path=Path(os.getenv("TLS_KEY_PATH", str(TLS_KEY_PATH))),
         )
 
     def validate(self) -> None:
@@ -166,6 +174,9 @@ class Settings:
                 ipaddress.ip_address(client)
             except ValueError as exc:
                 raise ConfigError("management UI allowed clients must be literal IP addresses") from exc
+        if self.tls_enabled:
+            if not self.tls_cert_path.is_file() or not self.tls_key_path.is_file():
+                raise ConfigError("TLS certificate and key files are required when TLS is enabled")
         if self.webhook_url:
             webhook = urlparse(self.webhook_url)
             try:

@@ -47,6 +47,9 @@ services:
       # Docker rewrites host-originated published-port traffic to this fixed
       # project gateway; retain it so loopback health/operator access works.
       UI_ALLOWED_CLIENTS: ${UI_ALLOWED_CLIENTS:-10.89.0.1}
+      TLS_ENABLED: ${TLS_ENABLED:-false}
+      TLS_CERT_PATH: /data/tls.crt
+      TLS_KEY_PATH: /data/tls.key
     ports:
       - "${WATCHER_BIND_ADDRESS:-127.0.0.1}:18782:8080"
     volumes:

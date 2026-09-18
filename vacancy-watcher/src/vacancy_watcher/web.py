@@ -16,6 +16,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import html
 import ipaddress
 import secrets
+import ssl
 import threading
 import time
 from typing import Any, Callable
@@ -36,14 +37,16 @@ class ManagementApp:
     settings: Settings
     state: AtomicState
     check_now: Callable[[], Any] | None = None
+    authenticate: Callable[[str, str], str] | None = None
 
     def __post_init__(self) -> None:
-        self._check_lock = threading.Lock()
+        self._operation_lock = threading.Lock()
         self._check_running = False
+        self._auth_running = False
 
     @property
     def check_running(self) -> bool:
-        with self._check_lock:
+        with self._operation_lock:
             return self._check_running
 
     def start_check_now(self) -> bool:
@@ -51,8 +54,8 @@ class ManagementApp:
 
         if self.check_now is None:
             return False
-        with self._check_lock:
-            if self._check_running:
+        with self._operation_lock:
+            if self._check_running or self._auth_running:
                 return False
             self._check_running = True
 
@@ -64,10 +67,44 @@ class ManagementApp:
                 # must never turn callback failures into an HTTP-thread crash.
                 pass
             finally:
-                with self._check_lock:
+                with self._operation_lock:
                     self._check_running = False
 
         thread = threading.Thread(target=run, name="vacancy-watcher-check", daemon=True)
+        thread.start()
+        return True
+
+    @property
+    def auth_running(self) -> bool:
+        with self._operation_lock:
+            return self._auth_running
+
+    def start_authentication(self, username: str, password: str) -> bool:
+        """Use credentials once in a background login and retain no app copy."""
+
+        if self.authenticate is None:
+            return False
+        with self._operation_lock:
+            if self._auth_running or self._check_running:
+                return False
+            self._auth_running = True
+
+        def run() -> None:
+            nonlocal username, password
+            result = "failed"
+            try:
+                result = self.authenticate(username, password)
+            except Exception:
+                self.state.update(lambda value: value.__setitem__("auth_status", "failed"))
+            finally:
+                username = ""
+                password = ""
+                with self._operation_lock:
+                    self._auth_running = False
+                if result == "valid":
+                    self.start_check_now()
+
+        thread = threading.Thread(target=run, name="vacancy-watcher-auth", daemon=True)
         thread.start()
         return True
 
@@ -99,7 +136,13 @@ def create_server(host: str, port: int, app: ManagementApp) -> ManagementServer:
             if str(exc) == "management console must bind to a loopback address":
                 raise
             raise ValueError("management console must bind to a loopback address") from exc
-    return ManagementServer((host, port), app)
+    server = ManagementServer((host, port), app)
+    if app.settings.tls_enabled:
+        context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        context.minimum_version = ssl.TLSVersion.TLSv1_2
+        context.load_cert_chain(app.settings.tls_cert_path, app.settings.tls_key_path)
+        server.socket = context.wrap_socket(server.socket, server_side=True)
+    return server
 
 
 def _escape(value: Any) -> str:
@@ -140,7 +183,7 @@ def _page_html(settings: Settings, state: dict[str, Any], csrf_token: str, messa
     manual = bool(_state_value(state, "manual_intervention", False))
     vacancy = str(_state_value(state, "vacancy_status", "unknown"))
     enrollment = str(_state_value(state, "enrollment_status", "idle"))
-    auth_status = str(_state_value(state, "auth_status", "unknown"))
+    auth_status = "authenticating" if bool(state.get("auth_running")) else str(_state_value(state, "auth_status", "unknown"))
     last_result = str(_state_value(state, "last_result", "never_run"))
     failures = _state_value(state, "failure_count", 0)
     last_cycle = _utc_timestamp(_state_value(state, "last_cycle_epoch", 0))
@@ -212,7 +255,7 @@ def _page_html(settings: Settings, state: dict[str, Any], csrf_token: str, messa
     button.secondary {{ color: var(--cobalt-dark); background: white; }}
     button.danger-action {{ color: var(--red); border-color: #e5afb5; background: white; }}
     label {{ display: block; color: var(--slate); font-size: .8rem; font-weight: 700; margin: 1rem 0 .35rem; }}
-    input[type=text] {{ width: 100%; border: 1px solid #aebbd0; border-radius: .35rem; padding: .65rem .7rem; color: var(--ink); background: white; }}
+    input[type=text], input[type=password] {{ width: 100%; border: 1px solid #aebbd0; border-radius: .35rem; padding: .65rem .7rem; color: var(--ink); background: white; }}
     .notice {{ background: var(--green-wash); border: 1px solid #b7dfcc; color: var(--green); padding: .75rem 1rem; margin: 0 0 1rem; font-size: .9rem; }}
     .warning {{ background: var(--amber-wash); border: 1px solid #eed2b0; color: #77451d; padding: .8rem 1rem; margin-top: 1rem; font-size: .88rem; }}
     .fine {{ color: var(--slate); font-size: .78rem; margin: 1rem 0 0; }}
@@ -261,6 +304,15 @@ def _page_html(settings: Settings, state: dict[str, Any], csrf_token: str, messa
           <li><span>Enrollment state</span><span class="pill {safety_class}">{_escape(safety_label)}</span></li>
           <li><span>Last enrollment result</span><span class="pill muted">{_escape(enrollment)}</span></li>
         </ul>
+        <form method="post" action="/authenticate">
+          <input type="hidden" name="csrf" value="{_escape(csrf_token)}">
+          <label for="portal-username">University username</label>
+          <input id="portal-username" name="username" type="text" autocomplete="username" maxlength="256" required {'disabled' if not settings.tls_enabled or state.get('auth_running') else ''}>
+          <label for="portal-password">University password</label>
+          <input id="portal-password" name="password" type="password" autocomplete="current-password" maxlength="1024" required {'disabled' if not settings.tls_enabled or state.get('auth_running') else ''}>
+          <button type="submit" {'disabled' if not settings.tls_enabled or state.get('auth_running') else ''}>{'Connecting…' if state.get('auth_running') else 'Connect university account'}</button>
+        </form>
+        <p class="fine">Credentials are used once to create the portal session and are not written to disk. Authentication is accepted only over HTTPS.</p>
         <div class="actions">
           <form method="post" action="/{'pause' if monitoring else 'resume'}"><input type="hidden" name="csrf" value="{_escape(csrf_token)}"><button class="secondary" type="submit">{'Pause monitoring' if monitoring else 'Resume monitoring'}</button></form>
           <form method="post" action="/check-now"><input type="hidden" name="csrf" value="{_escape(csrf_token)}"><button type="submit" {'disabled' if not monitoring else ''}>Check now</button></form>
@@ -290,13 +342,16 @@ class ManagementHandler(BaseHTTPRequestHandler):
         return
 
     def _security_headers(self) -> dict[str, str]:
-        return {
+        headers = {
             "Cache-Control": "no-store",
             "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
             "Referrer-Policy": "no-referrer",
             "X-Content-Type-Options": "nosniff",
             "X-Frame-Options": "DENY",
         }
+        if self.app.settings.tls_enabled:
+            headers["Strict-Transport-Security"] = "max-age=31536000"
+        return headers
 
     def _send(self, status: int, body: str, *, content_type: str = "text/html; charset=utf-8", headers: dict[str, str] | None = None) -> None:
         payload = body.encode("utf-8")
@@ -326,7 +381,7 @@ class ManagementHandler(BaseHTTPRequestHandler):
         cookie = SimpleCookie()
         cookie[CSRF_COOKIE] = token
         cookie[CSRF_COOKIE]["path"] = "/"
-        cookie[CSRF_COOKIE]["secure"] = False
+        cookie[CSRF_COOKIE]["secure"] = self.app.settings.tls_enabled
         cookie[CSRF_COOKIE]["httponly"] = True
         cookie[CSRF_COOKIE]["samesite"] = "Strict"
         return cookie[CSRF_COOKIE].OutputString()
@@ -337,7 +392,7 @@ class ManagementHandler(BaseHTTPRequestHandler):
             return None
         try:
             parsed = urlsplit(f"http://{host_header}")
-            port = parsed.port or 80
+            port = parsed.port or (443 if self.app.settings.tls_enabled else 80)
         except ValueError:
             return None
         if (
@@ -382,8 +437,9 @@ class ManagementHandler(BaseHTTPRequestHandler):
             actual_port = actual.port or (443 if actual.scheme == "https" else 80)
         except ValueError:
             return False
+        expected_scheme = "https" if self.app.settings.tls_enabled else "http"
         return (
-            actual.scheme == "http"
+            actual.scheme == expected_scheme
             and actual.hostname.lower() == expected_host[0]
             and actual_port == expected_host[1]
         )
@@ -425,6 +481,7 @@ class ManagementHandler(BaseHTTPRequestHandler):
             self._send(HTTPStatus.SERVICE_UNAVAILABLE, "State is unavailable.")
             return
         state["check_running"] = self.app.check_running
+        state["auth_running"] = self.app.auth_running
         message = parse_qs(urlsplit(self.path).query).get("message", [""])[0]
         headers = {"Set-Cookie": self._set_cookie(token)} if new_cookie else None
         self._send(HTTPStatus.OK, _page_html(self.app.settings, state, token, message=message), headers=headers)
@@ -437,7 +494,7 @@ class ManagementHandler(BaseHTTPRequestHandler):
             self._post_error(HTTPStatus.FORBIDDEN, "Management access denied.")
             return
         path = urlsplit(self.path).path
-        if path not in {"/pause", "/resume", "/check-now", "/arm", "/disarm"}:
+        if path not in {"/pause", "/resume", "/check-now", "/authenticate", "/arm", "/disarm"}:
             self._post_error(HTTPStatus.NOT_FOUND, "Not found")
             return
         if not self._same_origin():
@@ -474,6 +531,21 @@ class ManagementHandler(BaseHTTPRequestHandler):
                     self._post_error(HTTPStatus.CONFLICT, "A check is already running or no callback is configured.")
                     return
                 message = "Check started in the background."
+            elif path == "/authenticate":
+                if not self.app.settings.tls_enabled:
+                    self._post_error(HTTPStatus.UPGRADE_REQUIRED, "Authentication requires HTTPS.")
+                    return
+                username = form.pop("username", "")
+                password = form.pop("password", "")
+                if not username or not password or len(username) > 256 or len(password) > 1024:
+                    self._post_error(HTTPStatus.BAD_REQUEST, "Username and password are required.")
+                    return
+                if not self.app.start_authentication(username, password):
+                    self._post_error(HTTPStatus.CONFLICT, "Authentication or a portal check is already running.")
+                    return
+                username = ""
+                password = ""
+                message = "Authentication started. Refresh shortly to see the result."
             elif path == "/disarm":
                 self.app.state.set_enrollment_armed(False)
                 message = "Enrollment disarmed."

@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import argparse
-from http.client import HTTPConnection, HTTPException
+from http.client import HTTPConnection, HTTPSConnection, HTTPException
 from pathlib import Path
+import ssl
 import sys
 import threading
 import time
@@ -83,7 +84,11 @@ def main(argv: list[str] | None = None) -> int:
         if not terminal_success and (last_cycle <= 0 or time.time() - last_cycle > stale_after):
             return 1
         if args.command == "health-service":
-            connection = HTTPConnection("127.0.0.1", settings.ui_port, timeout=2)
+            if settings.tls_enabled:
+                tls_context = ssl.create_default_context(cafile=str(settings.tls_cert_path))
+                connection = HTTPSConnection("127.0.0.1", settings.ui_port, timeout=2, context=tls_context)
+            else:
+                connection = HTTPConnection("127.0.0.1", settings.ui_port, timeout=2)
             try:
                 connection.request("GET", "/healthz")
                 response = connection.getresponse()
@@ -110,7 +115,7 @@ def main(argv: list[str] | None = None) -> int:
                     return result
                 time.sleep(1)
 
-        app = ManagementApp(settings, watcher.state, check_now)
+        app = ManagementApp(settings, watcher.state, check_now, watcher.authenticate)
         server = create_server(settings.ui_host, settings.ui_port, app)
         server_thread = threading.Thread(
             target=server.serve_forever,

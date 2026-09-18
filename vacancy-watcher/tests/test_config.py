@@ -1,4 +1,6 @@
 import os
+from pathlib import Path
+import tempfile
 import unittest
 from unittest.mock import patch
 
@@ -46,6 +48,16 @@ class ConfigTests(unittest.TestCase):
         with patch.dict(os.environ, {"UI_ALLOWED_CLIENTS": "desktop.internal"}, clear=True):
             with self.assertRaises(ConfigError):
                 Settings.from_env()
+
+    def test_tls_requires_existing_certificate_and_key(self):
+        with tempfile.TemporaryDirectory() as directory:
+            cert = Path(directory) / "tls.crt"
+            key = Path(directory) / "tls.key"
+            with self.assertRaises(ConfigError):
+                Settings(tls_enabled=True, tls_cert_path=cert, tls_key_path=key).validate()
+            cert.write_text("test", encoding="utf-8")
+            key.write_text("test", encoding="utf-8")
+            Settings(tls_enabled=True, tls_cert_path=cert, tls_key_path=key).validate()
 
     def test_webhook_requires_plain_https_default_port(self):
         Settings(webhook_url="https://hooks.example.test/path").validate()
