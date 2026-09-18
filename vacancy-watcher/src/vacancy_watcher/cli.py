@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import argparse
+from http.client import HTTPConnection, HTTPException
 from pathlib import Path
 import sys
+import threading
 import time
 
 from .config import ConfigError, Settings
@@ -51,8 +53,10 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", required=True)
     subparsers.add_parser("once", help="run one headless authenticated observation")
     subparsers.add_parser("run", help="poll until stopped or confirmed enrollment")
+    subparsers.add_parser("serve", help="poll and serve the loopback management console")
     subparsers.add_parser("capture-auth", help="manually sign in in a headed browser and save storage state")
     subparsers.add_parser("health", help="check that the polling loop has made recent progress")
+    subparsers.add_parser("health-service", help="check polling progress and the management console")
     return parser
 
 
@@ -66,21 +70,61 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     if args.command == "capture-auth":
         return capture_auth(settings)
-    if args.command == "health":
+    if args.command in {"health", "health-service"}:
         try:
             state = AtomicState(settings.data_path).read()
             if state.get("manual_intervention"):
                 return 1
-            if state.get("enrollment_status") == "success":
-                return 0
+            terminal_success = state.get("enrollment_status") == "success"
             last_cycle = int(state.get("last_cycle_epoch", 0))
         except (OSError, TypeError, ValueError, StateError):
             return 1
         stale_after = max(settings.poll_interval, settings.auth_retry_interval) + settings.jitter + 300
-        return 0 if last_cycle > 0 and time.time() - last_cycle <= stale_after else 1
+        if not terminal_success and (last_cycle <= 0 or time.time() - last_cycle > stale_after):
+            return 1
+        if args.command == "health-service":
+            connection = HTTPConnection("127.0.0.1", settings.ui_port, timeout=2)
+            try:
+                connection.request("GET", "/healthz")
+                response = connection.getresponse()
+                response.read(1024)
+                if response.status != 200:
+                    return 1
+            except (OSError, HTTPException):
+                return 1
+            finally:
+                connection.close()
+        return 0
     watcher = Watcher(settings)
     if args.command == "once":
         result = watcher.run_once()
         return 0 if result not in {"failure", "auth_required", "manual_intervention"} else 1
+    if args.command == "serve":
+        from .web import ManagementApp, create_server
+
+        def check_now() -> str:
+            deadline = time.monotonic() + 60
+            while True:
+                result = watcher.run_once()
+                if result != "busy" or time.monotonic() >= deadline:
+                    return result
+                time.sleep(1)
+
+        app = ManagementApp(settings, watcher.state, check_now)
+        server = create_server(settings.ui_host, settings.ui_port, app)
+        server_thread = threading.Thread(
+            target=server.serve_forever,
+            name="vacancy-watcher-console",
+            daemon=True,
+        )
+        server_thread.start()
+        watcher.logger.log("info", "management_console_started", port=settings.ui_port)
+        try:
+            watcher.run_forever()
+        finally:
+            server.shutdown()
+            server.server_close()
+            server_thread.join(timeout=5)
+        return 0
     watcher.run_forever()
     return 0

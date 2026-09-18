@@ -9,4 +9,4 @@ RUN mkdir -p /data && chown pwuser:pwuser /data && chmod 700 /data
 VOLUME ["/data"]
 USER pwuser
 ENTRYPOINT ["python", "-m", "vacancy_watcher"]
-CMD ["run"]
+CMD ["serve"]

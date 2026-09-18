@@ -18,7 +18,7 @@ services:
     tmpfs:
       - /tmp:size=256m,mode=1777
     healthcheck:
-      test: ["CMD", "python", "-m", "vacancy_watcher", "health"]
+      test: ["CMD", "python", "-m", "vacancy_watcher", "health-service"]
       interval: 1m
       timeout: 10s
       start_period: 2m
@@ -42,5 +42,7 @@ services:
       AUTH_RETRY_INTERVAL: ${AUTH_RETRY_INTERVAL:-900}
       STOP_AFTER_SUCCESS: ${STOP_AFTER_SUCCESS:-true}
       WEBHOOK_URL: ${WEBHOOK_URL:-}
+    ports:
+      - "127.0.0.1:18782:8080"
     volumes:
       - ./data:/data

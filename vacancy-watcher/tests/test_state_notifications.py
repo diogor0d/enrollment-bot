@@ -57,3 +57,15 @@ class StateNotificationTests(unittest.TestCase):
             self.assertEqual(state.transition_vacancy_status("available"), "unavailable")
             self.assertNotIn("vacancy:unavailable", state.read()["notifications"])
             self.assertTrue(state.claim_notification("vacancy:available"))
+
+    def test_pause_disarms_and_runtime_arm_is_consumed_once(self):
+        with tempfile.TemporaryDirectory() as directory:
+            state = AtomicState(Path(directory) / "state.json")
+            state.set_enrollment_armed(True)
+            self.assertTrue(state.consume_enrollment_arm())
+            self.assertFalse(state.consume_enrollment_arm())
+            state.set_enrollment_armed(True)
+            state.set_monitoring_enabled(False)
+            value = state.read()
+            self.assertFalse(value["monitoring_enabled"])
+            self.assertFalse(value["enrollment_armed"])

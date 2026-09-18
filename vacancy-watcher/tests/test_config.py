@@ -24,6 +24,8 @@ class ConfigTests(unittest.TestCase):
             Settings(expected_class_id="different").validate()
         with self.assertRaises(ConfigError):
             Settings(mode="observe").validate()
+        with self.assertRaises(ConfigError):
+            Settings(ui_host="127.0.0.1").validate()
 
     def test_webhook_requires_plain_https_default_port(self):
         Settings(webhook_url="https://hooks.example.test/path").validate()

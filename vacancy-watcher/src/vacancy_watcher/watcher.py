@@ -54,6 +54,7 @@ class Watcher:
         self.state.update(lambda state: state.__setitem__("failure_count", 0))
 
     def _auth_required(self) -> str:
+        self.state.update(lambda state: state.__setitem__("auth_status", "required"))
         self.notifier.notify_once("auth_required", "auth_required")
         self._record_failure("auth_required")
         return "auth_required"
@@ -80,7 +81,12 @@ class Watcher:
         lock_path = Path(self.settings.data_path).parent / ".vacancy-watcher-cycle.lock"
         try:
             with ExclusiveFileLock(lock_path):
-                return self._run_once_locked()
+                result = self._run_once_locked()
+                try:
+                    self.state.update(lambda state: state.__setitem__("last_result", result))
+                except StateError:
+                    pass
+                return result
         except LockHeldError:
             self.logger.log("warning", "watcher_cycle_already_running")
             return "busy"
@@ -95,6 +101,8 @@ class Watcher:
         if state.get("manual_intervention"):
             self.notifier.notify_once("manual_intervention_latched", "manual_intervention_required")
             return "manual_intervention"
+        if not state.get("monitoring_enabled", True):
+            return "paused"
         recovering_submission = state.get("enrollment_status") == "submitting"
         if not Path(self.settings.storage_state_path).is_file():
             return self._auth_required()
@@ -116,6 +124,7 @@ class Watcher:
                     page.goto(self.settings.list_url, wait_until="domcontentloaded")
                     self._authenticated_page(page)
                     authenticated = True
+                    self.state.update(lambda value: value.__setitem__("auth_status", "valid"))
                     if recovering_submission:
                         try:
                             confirmed_after_restart = authoritative_list_verification(page, self.settings)
@@ -182,6 +191,9 @@ class Watcher:
                             self.logger.log("warning", "enrollment_gates_closed")
                             return "available"
                         assert_enrollment_form(page, self.settings)
+                        if not self.state.consume_enrollment_arm():
+                            self.logger.log("info", "enrollment_not_armed")
+                            return "available"
                         self.state.mark_submission_started()
                         try:
                             confirmed = submit_once_and_verify(page, self.settings)

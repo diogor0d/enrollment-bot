@@ -19,6 +19,10 @@ DEFAULT_STATE: dict[str, Any] = {
     "enrollment_status": "idle",
     "manual_intervention": False,
     "last_cycle_epoch": 0,
+    "last_result": "never_run",
+    "auth_status": "unknown",
+    "monitoring_enabled": True,
+    "enrollment_armed": False,
 }
 
 
@@ -191,3 +195,28 @@ class AtomicState:
         """Persist the point after which a crash must never trigger an automatic retry."""
 
         self.update(lambda state: state.__setitem__("enrollment_status", "submitting"))
+
+    def set_monitoring_enabled(self, enabled: bool) -> None:
+        def mutate(state: dict[str, Any]) -> None:
+            state["monitoring_enabled"] = bool(enabled)
+            if not enabled:
+                state["enrollment_armed"] = False
+
+        self.update(mutate)
+
+    def set_enrollment_armed(self, armed: bool) -> None:
+        self.update(lambda state: state.__setitem__("enrollment_armed", bool(armed)))
+
+    def consume_enrollment_arm(self) -> bool:
+        """Atomically consume the one-shot runtime arm immediately before submission."""
+
+        consumed = False
+
+        def mutate(state: dict[str, Any]) -> None:
+            nonlocal consumed
+            if state.get("monitoring_enabled") and state.get("enrollment_armed"):
+                state["enrollment_armed"] = False
+                consumed = True
+
+        self.update(mutate)
+        return consumed

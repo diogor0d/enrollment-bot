@@ -1,5 +1,6 @@
 .git
 .venv
+.playwright-cli
 .env
 __pycache__
 *.pyc

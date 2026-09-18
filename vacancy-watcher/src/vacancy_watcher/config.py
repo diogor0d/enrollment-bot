@@ -17,6 +17,8 @@ CLASS_NAME = "PL3"
 EXPECTED_CLASS_ID = "249089"
 PROFILE_ALT = "PL"
 ENROLLMENT_ACK = f"{COURSE_CODE}:{CLASS_NAME}:{EXPECTED_CLASS_ID}"
+UI_HOST = "0.0.0.0"
+UI_PORT = 8080
 
 
 class ConfigError(ValueError):
@@ -69,6 +71,8 @@ class Settings:
     jitter: float = 2.0
     auth_retry_interval: float = 900.0
     stop_after_success: bool = True
+    ui_host: str = UI_HOST
+    ui_port: int = UI_PORT
 
     @property
     def enrollment_gate(self) -> bool:
@@ -121,6 +125,8 @@ class Settings:
             raise ConfigError("poll jitter must not be negative")
         if self.auth_retry_interval < 60:
             raise ConfigError("authentication retry interval must be at least 60 seconds")
+        if self.ui_host != UI_HOST or self.ui_port != UI_PORT:
+            raise ConfigError("management UI host and port are fixed for the container boundary")
         if self.webhook_url:
             webhook = urlparse(self.webhook_url)
             try:

@@ -21,6 +21,10 @@ The watcher also takes a cross-process cycle lock. A durable `submitting`
 marker is written before the single Save click; after a crash, the next cycle
 checks the authoritative list and either confirms success or requires manual
 intervention without submitting again.
+The management console adds a separate one-shot runtime arm. Even with all
+three boot-time gates open, enrollment cannot submit until the exact
+acknowledgement is entered in the console. Pausing monitoring automatically
+disarms enrollment.
 
 ## Local authentication capture
 
@@ -68,6 +72,27 @@ docker compose run --rm vacancy-watcher once
 docker compose up -d vacancy-watcher
 ```
 
+The long-running service includes its management console. Compose publishes it
+only on server loopback at `127.0.0.1:18782`; it must not be changed to a
+wildcard or LAN binding. Reach it through an authenticated SSH tunnel:
+
+```text
+ssh -N -L 18782:127.0.0.1:18782 diogoserver
+```
+
+Then open `http://127.0.0.1:18782/`. The SSH connection is the authentication
+boundary. The console also enforces same-origin requests and a random CSRF
+token, loads no external assets, and exposes neither cookie state nor webhook
+configuration. Do not expose it directly through Cloudflare, a reverse proxy,
+LAN, or the public Internet without adding an independently reviewed
+authentication layer.
+
+The console can pause or resume future cycles, request an immediate check, and
+arm or disarm the one-shot enrollment path. Pausing does not interrupt a
+submission that has already reached the durable `submitting` state. A latched
+manual-intervention state cannot be cleared from the console; verify the
+authoritative enrollment list before repairing state on the host.
+
 To explicitly enable autonomous enrollment, supply all gates for that command
 or service and review the risk first:
 
@@ -87,7 +112,8 @@ claimed as verified by this repository.
 
 Compose runs as the image's unprivileged `pwuser`, drops all capabilities,
 sets `no-new-privileges`, uses a read-only root filesystem and private 256 MiB
-shared memory, bounds processes/CPU/memory/logs, and exposes no host ports.
+shared memory, bounds processes/CPU/memory/logs, and exposes only the
+loopback-bound management port.
 Only `/data` and `/tmp` are writable. A health check detects a stalled polling
 loop or a latched manual-intervention state. Run only this trusted portal
 workflow and do not add unrelated browsing to the service.
@@ -95,6 +121,13 @@ workflow and do not add unrelated browsing to the service.
 Copy `.env.example` to an ignored `.env` only when persistent overrides are
 needed. Do not commit `.env`, `data/`, or `auth-state.json`. The webhook URL is
 restricted to direct HTTPS on port 443 and redirects are rejected.
+
+`data/auth-state.json` and `data/state.json` are the only persistent files.
+No backup is configured: losing them is recoverable by capturing a new session,
+and a missing state file recreates conservative defaults with enrollment
+disarmed. Roll back by checking out the previously recorded Git revision,
+rebuilding, and running `docker compose up -d`; never delete the data directory
+as part of routine rollback.
 
 ## Portal facts and assumptions
 
