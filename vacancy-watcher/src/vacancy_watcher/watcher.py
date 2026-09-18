@@ -153,14 +153,24 @@ class Watcher:
         username = ""
         password = ""
         captcha = ""
+        stage = "acquire_cycle_lock"
         try:
             lock_path = Path(self.settings.data_path).parent / ".vacancy-watcher-cycle.lock"
             with ExclusiveFileLock(lock_path):
                 with sync_playwright() as playwright:
-                    browser = playwright.chromium.launch(headless=True)
+                    stage = "launch_browser"
+                    browser = playwright.chromium.launch(headless=True, timeout=90_000)
                     context = browser.new_context()
                     page = context.new_page()
-                    page.goto(self.settings.list_url, wait_until="domcontentloaded")
+                    page.set_default_timeout(90_000)
+                    page.set_default_navigation_timeout(90_000)
+                    stage = "open_login"
+                    page.goto(
+                        self.settings.list_url,
+                        wait_until="domcontentloaded",
+                        timeout=90_000,
+                    )
+                    stage = "inspect_login"
                     form = page.locator("form#loginFormBean")
                     username_input = form.locator("input[name='username']")
                     password_input = form.locator("input[name='password']")
@@ -176,7 +186,12 @@ class Watcher:
                         or captcha_input.count() != 1
                     ):
                         raise PortalAuthRequired("exact interactive login form is not available")
-                    challenge_png = captcha_container.screenshot(type="png")
+                    stage = "capture_captcha"
+                    challenge_png = captcha_container.screenshot(
+                        type="png",
+                        animations="disabled",
+                        timeout=90_000,
+                    )
                     challenge = "data:image/png;base64," + base64.b64encode(challenge_png).decode("ascii")
                     deadline = time.monotonic() + 300
                     self._set_auth_flow("challenge", challenge, deadline)
@@ -189,12 +204,18 @@ class Watcher:
                     if submission is None:
                         raise PortalAuthRequired("interactive authentication was not supplied")
                     username, password, captcha = submission
+                    stage = "submit_login"
                     username_input.fill(username)
                     password_input.fill(password)
                     captcha_input.fill(captcha)
                     submit.click()
                     page.wait_for_load_state("domcontentloaded")
-                    page.goto(self.settings.list_url, wait_until="domcontentloaded")
+                    stage = "verify_login"
+                    page.goto(
+                        self.settings.list_url,
+                        wait_until="domcontentloaded",
+                        timeout=90_000,
+                    )
                     self._authenticated_page(page)
                     find_course_link(page, self.settings)
                     write_json_secure_atomic(Path(self.settings.storage_state_path), context.storage_state())
@@ -203,7 +224,12 @@ class Watcher:
                     self._set_auth_flow("valid")
         except Exception as exc:
             self.state.update(lambda value: value.__setitem__("auth_status", "failed"))
-            self.logger.log("warning", "portal_authentication_failed", failure_kind=type(exc).__name__)
+            self.logger.log(
+                "warning",
+                "portal_authentication_failed",
+                failure_kind=type(exc).__name__,
+                auth_stage=stage,
+            )
             self._set_auth_flow("failed")
         finally:
             username = ""
