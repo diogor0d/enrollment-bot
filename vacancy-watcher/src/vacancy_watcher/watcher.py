@@ -115,17 +115,12 @@ class Watcher:
     def submit_authentication(self, username: str, password: str, captcha: str) -> bool:
         """Hand one user-solved challenge to the existing browser session."""
 
-        if (
-            not username
-            or not password
-            or not captcha
-            or len(username) > 256
-            or len(password) > 1024
-            or len(captcha) > 256
-        ):
+        if not username or not password or len(username) > 256 or len(password) > 1024 or len(captcha) > 256:
             return False
         with self._interactive_auth_lock:
             if self._interactive_auth_status != "challenge" or self._interactive_auth_submission is not None:
+                return False
+            if self._interactive_auth_captcha is not None and not captcha:
                 return False
             self._interactive_auth_submission = (username, password, captcha)
             self._interactive_auth_status = "submitting"
@@ -174,11 +169,11 @@ class Watcher:
                     stage = "inspect_login"
                     form = page.locator("form#loginFormBean")
                     form.wait_for(state="visible", timeout=90_000)
+                    page.wait_for_load_state("domcontentloaded", timeout=90_000)
                     username_input = form.locator("input[name='username']")
                     password_input = form.locator("input[name='password']")
                     submit = form.locator("input[type='submit']")
                     captcha_container = page.locator("#divCaptcha_text:visible")
-                    captcha_container.wait_for(state="visible", timeout=90_000)
                     captcha_input = captcha_container.locator("input:visible")
                     diagnostics = {
                         "login_form_count": form.count(),
@@ -193,17 +188,20 @@ class Watcher:
                         or diagnostics["username_input_count"] != 1
                         or diagnostics["password_input_count"] != 1
                         or diagnostics["submit_input_count"] != 1
-                        or diagnostics["captcha_container_count"] != 1
-                        or diagnostics["captcha_input_count"] != 1
+                        or diagnostics["captcha_container_count"] not in {0, 1}
+                        or diagnostics["captcha_input_count"]
+                        != diagnostics["captcha_container_count"]
                     ):
                         raise PortalAuthRequired("exact interactive login form is not available")
                     stage = "capture_captcha"
-                    challenge_png = captcha_container.screenshot(
-                        type="png",
-                        animations="disabled",
-                        timeout=90_000,
-                    )
-                    challenge = "data:image/png;base64," + base64.b64encode(challenge_png).decode("ascii")
+                    challenge = None
+                    if diagnostics["captcha_container_count"] == 1:
+                        challenge_png = captcha_container.screenshot(
+                            type="png",
+                            animations="disabled",
+                            timeout=90_000,
+                        )
+                        challenge = "data:image/png;base64," + base64.b64encode(challenge_png).decode("ascii")
                     deadline = time.monotonic() + 300
                     self._set_auth_flow("challenge", challenge, deadline)
                     self.state.update(lambda value: value.__setitem__("auth_status", "challenge_required"))
@@ -218,7 +216,8 @@ class Watcher:
                     stage = "submit_login"
                     username_input.fill(username)
                     password_input.fill(password)
-                    captcha_input.fill(captcha)
+                    if diagnostics["captcha_input_count"] == 1:
+                        captcha_input.fill(captcha)
                     submit.click()
                     page.wait_for_load_state("domcontentloaded")
                     stage = "verify_login"

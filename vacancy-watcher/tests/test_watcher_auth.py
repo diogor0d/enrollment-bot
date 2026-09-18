@@ -32,6 +32,19 @@ class WatcherAuthenticationTests(unittest.TestCase):
             self.assertNotIn("password", repr(snapshot))
             self.assertNotIn("answer", repr(snapshot))
 
+    def test_submission_without_captcha_is_allowed_only_when_portal_did_not_show_one(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            watcher = Watcher(
+                Settings(
+                    data_path=root / "state.json",
+                    storage_state_path=root / "auth-state.json",
+                )
+            )
+            watcher._set_auth_flow("challenge", None, deadline=10**20)
+
+            self.assertTrue(watcher.submit_authentication("user", "password", ""))
+
 
 if __name__ == "__main__":
     unittest.main()

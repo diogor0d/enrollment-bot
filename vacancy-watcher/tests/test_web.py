@@ -281,6 +281,40 @@ class ManagementWebTests(WebFixture):
         )
         self.assertEqual(status, 409)
 
+    def test_ready_login_without_portal_captcha_does_not_require_a_response(self):
+        received = []
+        self.app.auth_snapshot = lambda: {
+            "status": "challenge",
+            "captcha": None,
+            "expires_in": 300,
+        }
+        self.app.auth_submit = lambda username, password, captcha: (
+            received.append((username, password, captcha)) or True
+        )
+        self.app.settings = Settings(
+            data_path=self.settings.data_path,
+            storage_state_path=self.settings.storage_state_path,
+            tls_enabled=True,
+        )
+
+        _, _, body, cookie, token = self.get_dashboard()
+        self.assertIn('action="/auth/submit"', body)
+        self.assertIn('name="username"', body)
+        self.assertIn('name="password"', body)
+        self.assertNotIn('name="captcha"', body)
+        self.assertNotIn("University CAPTCHA challenge", body)
+        status, _, response = self.request(
+            "POST",
+            "/auth/submit",
+            body=f"csrf={token}&username=test-user&password=test-password",
+            cookie=cookie,
+            origin_scheme="https",
+        )
+        self.assertEqual(status, 303)
+        self.assertNotIn("test-user", response)
+        self.assertNotIn("test-password", response)
+        self.assertEqual(received, [("test-user", "test-password", "")])
+
     def test_check_and_arm_refuse_while_monitoring_is_paused(self):
         self.state.set_monitoring_enabled(False)
         _, _, _, cookie, token = self.get_dashboard()

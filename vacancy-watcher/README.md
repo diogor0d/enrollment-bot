@@ -120,10 +120,11 @@ When `TLS_ENABLED=true`, the console provides a two-stage **university login**
 flow. **Prepare university login** first opens a fresh headless browser at the
 fixed UC HTTPS origin without collecting credentials. If the portal presents
 its text CAPTCHA, the watcher captures that challenge and displays it in the
-console. The operator then enters the university username, password, and the
-CAPTCHA response. Those three values are handed once to the same waiting
-browser session, cleared from process memory after use, and never written to
-disk or logs. The challenge expires after five minutes. Only an independently
+console. The operator then enters the university username and password, plus a
+CAPTCHA response only when that session shows a challenge. Those submitted
+values are handed once to the same waiting browser session, cleared from
+process memory after use, and never written to disk or logs. The prepared
+session expires after five minutes. Only an independently
 verified Playwright session state is atomically written to
 `/data/auth-state.json`; a failed login never replaces a previous session.
 The watcher does not solve or bypass CAPTCHAs. Never enable this form over

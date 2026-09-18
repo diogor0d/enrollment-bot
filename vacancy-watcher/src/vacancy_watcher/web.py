@@ -204,19 +204,25 @@ def _page_html(settings: Settings, state: dict[str, Any], csrf_token: str, messa
         safety_class = "danger"
     if auth_flow_status == "challenge":
         captcha = str(auth_flow.get("captcha") or "")
+        captcha_fields = ""
+        captcha_explanation = "No CAPTCHA was requested for this portal session."
+        if captcha:
+            captcha_fields = f"""
+          <div class="captcha"><img src="{_escape(captcha)}" alt="University CAPTCHA challenge"></div>
+          <label for="portal-captcha">CAPTCHA response</label>
+          <input id="portal-captcha" name="captcha" type="text" autocomplete="off" maxlength="256" required>"""
+            captcha_explanation = "Solve the displayed university CAPTCHA before submitting."
         auth_control = f"""
         <form method="post" action="/auth/submit">
           <input type="hidden" name="csrf" value="{_escape(csrf_token)}">
-          <div class="captcha"><img src="{_escape(captcha)}" alt="University CAPTCHA challenge"></div>
+          {captcha_fields}
           <label for="portal-username">University username</label>
           <input id="portal-username" name="username" type="text" autocomplete="username" maxlength="256" required>
           <label for="portal-password">University password</label>
           <input id="portal-password" name="password" type="password" autocomplete="current-password" maxlength="1024" required>
-          <label for="portal-captcha">CAPTCHA response</label>
-          <input id="portal-captcha" name="captcha" type="text" autocomplete="off" maxlength="256" required>
           <button type="submit">Connect university account</button>
         </form>
-        <p class="fine">This challenge expires in about {_escape(auth_flow.get('expires_in', 0))} seconds. Credentials and the CAPTCHA response are handed once to the waiting browser session and are not written to disk.</p>"""
+        <p class="fine">{captcha_explanation} This session expires in about {_escape(auth_flow.get('expires_in', 0))} seconds. Submitted values are handed once to the waiting browser and are not written to disk.</p>"""
     elif auth_flow_status in {"preparing", "submitting"}:
         label = "Preparing secure login…" if auth_flow_status == "preparing" else "Verifying university login…"
         auth_control = f'<button type="button" disabled>{label}</button><p class="fine">Refresh this page shortly. No credentials have been retained by the console.</p>'
@@ -571,15 +577,20 @@ class ManagementHandler(BaseHTTPRequestHandler):
                 username = form.pop("username", "")
                 password = form.pop("password", "")
                 captcha = form.pop("captcha", "")
+                challenge = self.app.authentication_snapshot()
+                captcha_required = bool(challenge.get("captcha"))
                 if (
                     not username
                     or not password
-                    or not captcha
+                    or (captcha_required and not captcha)
                     or len(username) > 256
                     or len(password) > 1024
                     or len(captcha) > 256
                 ):
-                    self._post_error(HTTPStatus.BAD_REQUEST, "Username, password, and CAPTCHA response are required.")
+                    self._post_error(
+                        HTTPStatus.BAD_REQUEST,
+                        "Username and password are required; the CAPTCHA response is required when shown.",
+                    )
                     return
                 if not self.app.submit_authentication(username, password, captcha):
                     self._post_error(HTTPStatus.CONFLICT, "The login challenge is absent, expired, or already submitted.")
