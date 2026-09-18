@@ -110,7 +110,11 @@ OCI index digest
 and the package pins `playwright==1.63.0`. No live PL3 vacancy behavior is
 claimed as verified by this repository.
 
-Compose runs as the image's unprivileged `pwuser`, drops all capabilities,
+The image defaults to its unprivileged `pwuser`. Compose explicitly runs as
+`WATCHER_UID:WATCHER_GID` (`1000:1000` by default) so the process matches the
+owner of the mode-700 bind-mounted `data/` directory on `diogoserver`. Set these
+two values to the owning numeric UID/GID before deploying on another host.
+Compose drops all capabilities,
 sets `no-new-privileges`, uses a read-only root filesystem and private 256 MiB
 shared memory, bounds processes/CPU/memory/logs, and exposes only the
 loopback-bound management port.

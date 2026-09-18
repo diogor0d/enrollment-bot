@@ -3,6 +3,7 @@ name: inforestudante-vacancy-watcher
 services:
   vacancy-watcher:
     build: .
+    user: "${WATCHER_UID:-1000}:${WATCHER_GID:-1000}"
     init: true
     shm_size: 256m
     restart: unless-stopped
