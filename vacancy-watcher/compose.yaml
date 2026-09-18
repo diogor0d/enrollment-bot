@@ -43,8 +43,10 @@ services:
       AUTH_RETRY_INTERVAL: ${AUTH_RETRY_INTERVAL:-900}
       STOP_AFTER_SUCCESS: ${STOP_AFTER_SUCCESS:-true}
       WEBHOOK_URL: ${WEBHOOK_URL:-}
+      UI_ALLOWED_HOSTS: ${UI_ALLOWED_HOSTS:-}
+      UI_ALLOWED_CLIENTS: ${UI_ALLOWED_CLIENTS:-}
     ports:
-      - "127.0.0.1:18782:8080"
+      - "${WATCHER_BIND_ADDRESS:-127.0.0.1}:18782:8080"
     volumes:
       - ./data:/data
 

@@ -53,7 +53,7 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", required=True)
     subparsers.add_parser("once", help="run one headless authenticated observation")
     subparsers.add_parser("run", help="poll until stopped or confirmed enrollment")
-    subparsers.add_parser("serve", help="poll and serve the loopback management console")
+    subparsers.add_parser("serve", help="poll and serve the allowlisted management console")
     subparsers.add_parser("capture-auth", help="manually sign in in a headed browser and save storage state")
     subparsers.add_parser("health", help="check that the polling loop has made recent progress")
     subparsers.add_parser("health-service", help="check polling progress and the management console")

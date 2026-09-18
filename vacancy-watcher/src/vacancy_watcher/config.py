@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import ipaddress
 import os
 from pathlib import Path
 from urllib.parse import urlparse
@@ -19,6 +20,8 @@ PROFILE_ALT = "PL"
 ENROLLMENT_ACK = f"{COURSE_CODE}:{CLASS_NAME}:{EXPECTED_CLASS_ID}"
 UI_HOST = "0.0.0.0"
 UI_PORT = 8080
+LOOPBACK_UI_HOSTS = ("localhost", "127.0.0.1", "::1")
+LOOPBACK_UI_CLIENTS = ("127.0.0.1", "::1")
 
 
 class ConfigError(ValueError):
@@ -49,6 +52,24 @@ def _env_float(name: str, default: float) -> float:
     return value
 
 
+def _env_ip_allowlist(name: str, defaults: tuple[str, ...], *, allow_localhost: bool = False) -> tuple[str, ...]:
+    """Parse a comma-separated literal-IP allowlist without trusting DNS."""
+
+    values = list(defaults)
+    for raw_value in os.getenv(name, "").split(","):
+        value = raw_value.strip().lower()
+        if not value:
+            continue
+        if allow_localhost and value == "localhost":
+            values.append(value)
+            continue
+        try:
+            values.append(str(ipaddress.ip_address(value)))
+        except ValueError as exc:
+            raise ConfigError(f"{name} must contain only literal IP addresses") from exc
+    return tuple(dict.fromkeys(values))
+
+
 @dataclass(frozen=True)
 class Settings:
     """Runtime settings with portal safety constants kept non-configurable."""
@@ -73,6 +94,8 @@ class Settings:
     stop_after_success: bool = True
     ui_host: str = UI_HOST
     ui_port: int = UI_PORT
+    ui_allowed_hosts: tuple[str, ...] = LOOPBACK_UI_HOSTS
+    ui_allowed_clients: tuple[str, ...] = LOOPBACK_UI_CLIENTS
 
     @property
     def enrollment_gate(self) -> bool:
@@ -102,6 +125,10 @@ class Settings:
             jitter=jitter,
             auth_retry_interval=max(60.0, _env_float("AUTH_RETRY_INTERVAL", 900.0)),
             stop_after_success=_env_bool("STOP_AFTER_SUCCESS", True),
+            ui_allowed_hosts=_env_ip_allowlist(
+                "UI_ALLOWED_HOSTS", LOOPBACK_UI_HOSTS, allow_localhost=True
+            ),
+            ui_allowed_clients=_env_ip_allowlist("UI_ALLOWED_CLIENTS", LOOPBACK_UI_CLIENTS),
         )
 
     def validate(self) -> None:
@@ -127,6 +154,18 @@ class Settings:
             raise ConfigError("authentication retry interval must be at least 60 seconds")
         if self.ui_host != UI_HOST or self.ui_port != UI_PORT:
             raise ConfigError("management UI host and port are fixed for the container boundary")
+        for host in self.ui_allowed_hosts:
+            if host == "localhost":
+                continue
+            try:
+                ipaddress.ip_address(host)
+            except ValueError as exc:
+                raise ConfigError("management UI allowed hosts must be literal IP addresses") from exc
+        for client in self.ui_allowed_clients:
+            try:
+                ipaddress.ip_address(client)
+            except ValueError as exc:
+                raise ConfigError("management UI allowed clients must be literal IP addresses") from exc
         if self.webhook_url:
             webhook = urlparse(self.webhook_url)
             try:

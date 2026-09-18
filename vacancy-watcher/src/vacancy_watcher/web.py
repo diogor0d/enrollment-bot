@@ -1,4 +1,4 @@
-"""Loopback-only management console for the vacancy watcher.
+"""Allowlisted management console for the vacancy watcher.
 
 The module deliberately uses only the Python standard library.  A caller owns
 the bind address and supplies a callback for ``check-now``; the callback is
@@ -86,8 +86,9 @@ class ManagementServer(ThreadingHTTPServer):
 def create_server(host: str, port: int, app: ManagementApp) -> ManagementServer:
     """Create a server on loopback or the fixed container wildcard address.
 
-    ``0.0.0.0`` is permitted only for the container entrypoint; Compose publishes
-    it exclusively through the host's ``127.0.0.1`` listener.
+    ``0.0.0.0`` is permitted only inside the container. Compose controls the
+    host-interface publication, while request host/client allowlists provide a
+    second enforcement layer.
     """
 
     if host != "0.0.0.0" and host.lower() != "localhost":
@@ -228,7 +229,7 @@ def _page_html(settings: Settings, state: dict[str, Any], csrf_token: str, messa
         <h1>Watch the opening.</h1>
         <p class="dek">A quiet control surface for one course, one target class, and a clearly bounded enrollment path.</p>
       </div>
-      <div class="stamp">local console<br>loopback / no external assets</div>
+      <div class="stamp">private console<br>allowlisted / no external assets</div>
     </header>
     {message_html}
     <section class="rail" aria-label="Safety rail">
@@ -330,7 +331,7 @@ class ManagementHandler(BaseHTTPRequestHandler):
         cookie[CSRF_COOKIE]["samesite"] = "Strict"
         return cookie[CSRF_COOKIE].OutputString()
 
-    def _loopback_host(self) -> tuple[str, int] | None:
+    def _allowed_host(self) -> tuple[str, int] | None:
         host_header = self.headers.get("Host", "")
         if not host_header:
             return None
@@ -350,16 +351,22 @@ class ManagementHandler(BaseHTTPRequestHandler):
             return None
         hostname = parsed.hostname.lower()
         if hostname == "localhost":
-            return hostname, port
+            return (hostname, port) if hostname in self.app.settings.ui_allowed_hosts else None
         try:
-            if not ipaddress.ip_address(hostname).is_loopback:
-                return None
+            hostname = str(ipaddress.ip_address(hostname))
         except ValueError:
             return None
-        return hostname, port
+        return (hostname, port) if hostname in self.app.settings.ui_allowed_hosts else None
+
+    def _allowed_client(self) -> bool:
+        try:
+            client = str(ipaddress.ip_address(self.client_address[0]))
+        except ValueError:
+            return False
+        return client in self.app.settings.ui_allowed_clients
 
     def _same_origin(self) -> bool:
-        expected_host = self._loopback_host()
+        expected_host = self._allowed_host()
         reference = self.headers.get("Origin") or self.headers.get("Referer")
         if expected_host is None:
             return False
@@ -396,8 +403,8 @@ class ManagementHandler(BaseHTTPRequestHandler):
         return self.app.state.read()
 
     def do_GET(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
-        if self._loopback_host() is None:
-            self._send(HTTPStatus.FORBIDDEN, "Loopback host required.")
+        if not self._allowed_client() or self._allowed_host() is None:
+            self._send(HTTPStatus.FORBIDDEN, "Management access denied.")
             return
         path = urlsplit(self.path).path
         if path == "/healthz":
@@ -426,6 +433,9 @@ class ManagementHandler(BaseHTTPRequestHandler):
         self._send(status, f"<p>{_escape(message)}</p>")
 
     def do_POST(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
+        if not self._allowed_client() or self._allowed_host() is None:
+            self._post_error(HTTPStatus.FORBIDDEN, "Management access denied.")
+            return
         path = urlsplit(self.path).path
         if path not in {"/pause", "/resume", "/check-now", "/arm", "/disarm"}:
             self._post_error(HTTPStatus.NOT_FOUND, "Not found")

@@ -73,19 +73,35 @@ docker compose up -d vacancy-watcher
 ```
 
 The long-running service includes its management console. Compose publishes it
-only on server loopback at `127.0.0.1:18782`; it must not be changed to a
-wildcard or LAN binding. Reach it through an authenticated SSH tunnel:
+on server loopback at `127.0.0.1:18782` by default. Reach the default deployment
+through an authenticated SSH tunnel:
 
 ```text
 ssh -N -L 18782:127.0.0.1:18782 diogoserver
 ```
 
 Then open `http://127.0.0.1:18782/`. The SSH connection is the authentication
-boundary. The console also enforces same-origin requests and a random CSRF
-token, loads no external assets, and exposes neither cookie state nor webhook
-configuration. Do not expose it directly through Cloudflare, a reverse proxy,
-LAN, or the public Internet without adding an independently reviewed
-authentication layer.
+boundary. The console also enforces an explicit Host allowlist, a client-IP
+allowlist, same-origin requests, and a random CSRF token; it loads no external
+assets and exposes neither cookie state nor webhook configuration.
+
+For a reviewed single-client LAN deployment, set all three values together:
+
+```text
+WATCHER_BIND_ADDRESS=<server-lan-ip>
+UI_ALLOWED_HOSTS=<server-lan-ip>
+UI_ALLOWED_CLIENTS=<client-lan-ip>
+```
+
+Bind only the server's specific LAN address, never `0.0.0.0`. Before changing
+the bind, install a persistent Docker-aware firewall policy that allows the
+client `/32` and drops every other source for host TCP `18782`; ordinary UFW
+input rules alone may not filter Docker-published traffic. Verify an authorized
+request from the allowed client and denied requests from another LAN client,
+VPN, IPv6, and the public path. IP allowlisting is network authorization, not
+user authentication: anyone controlling or spoofing the allowed client can
+reach the console. Do not expose it through Cloudflare, a reverse proxy, or the
+public Internet without a separately reviewed authentication layer.
 
 The console can pause or resume future cycles, request an immediate check, and
 arm or disarm the one-shot enrollment path. Pausing does not interrupt a
@@ -116,8 +132,9 @@ owner of the mode-700 bind-mounted `data/` directory on `diogoserver`. Set these
 two values to the owning numeric UID/GID before deploying on another host.
 Compose drops all capabilities,
 sets `no-new-privileges`, uses a read-only root filesystem and private 256 MiB
-shared memory, bounds processes/CPU/memory/logs, and exposes only the
-loopback-bound management port.
+shared memory, and bounds processes/CPU/memory/logs. The management port is
+loopback-bound unless the explicit LAN variables and corresponding firewall
+policy are supplied.
 The dedicated Compose network uses `10.89.0.0/28`, selected after checking the
 target host's Docker subnets and IPv4 routes. Revalidate that it does not
 overlap before deploying this Compose file to a different host.

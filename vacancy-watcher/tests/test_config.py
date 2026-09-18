@@ -27,6 +27,26 @@ class ConfigTests(unittest.TestCase):
         with self.assertRaises(ConfigError):
             Settings(ui_host="127.0.0.1").validate()
 
+    def test_management_allowlists_accept_only_literal_addresses(self):
+        with patch.dict(
+            os.environ,
+            {
+                "UI_ALLOWED_HOSTS": "192.168.1.199",
+                "UI_ALLOWED_CLIENTS": "192.168.1.200",
+            },
+            clear=True,
+        ):
+            settings = Settings.from_env()
+        settings.validate()
+        self.assertIn("192.168.1.199", settings.ui_allowed_hosts)
+        self.assertIn("192.168.1.200", settings.ui_allowed_clients)
+        self.assertIn("127.0.0.1", settings.ui_allowed_hosts)
+        self.assertIn("127.0.0.1", settings.ui_allowed_clients)
+
+        with patch.dict(os.environ, {"UI_ALLOWED_CLIENTS": "desktop.internal"}, clear=True):
+            with self.assertRaises(ConfigError):
+                Settings.from_env()
+
     def test_webhook_requires_plain_https_default_port(self):
         Settings(webhook_url="https://hooks.example.test/path").validate()
         invalid_values = (

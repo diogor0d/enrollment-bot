@@ -43,8 +43,21 @@ class WebFixture(unittest.TestCase):
         self.thread.join(timeout=2)
         self.temp.cleanup()
 
-    def request(self, method, path, *, body="", cookie="", origin=True, host_header="", fetch_site=""):
-        connection = http.client.HTTPConnection(self.host, self.port, timeout=2)
+    def request(
+        self,
+        method,
+        path,
+        *,
+        body="",
+        cookie="",
+        origin=True,
+        host_header="",
+        fetch_site="",
+        source_address=None,
+    ):
+        connection = http.client.HTTPConnection(
+            self.host, self.port, timeout=2, source_address=source_address
+        )
         headers = {"Content-Type": "application/x-www-form-urlencoded"}
         if host_header:
             headers["Host"] = host_header
@@ -130,6 +143,26 @@ class ManagementWebTests(WebFixture):
             body=f"csrf={token}",
             cookie=cookie,
             host_header="attacker.example",
+        )
+        self.assertEqual(status, 403)
+
+    def test_explicit_lan_host_is_allowed_but_unlisted_client_is_denied(self):
+        self.app.settings = Settings(
+            mode="enroll",
+            enable_enrollment=True,
+            acknowledgement=ENROLLMENT_ACK,
+            data_path=self.settings.data_path,
+            storage_state_path=self.settings.storage_state_path,
+            ui_allowed_hosts=("localhost", "127.0.0.1", "::1", "192.168.1.199"),
+            ui_allowed_clients=("127.0.0.1", "::1"),
+        )
+        status, _, _ = self.request("GET", "/", host_header="192.168.1.199:18782")
+        self.assertEqual(status, 200)
+        status, _, _ = self.request(
+            "GET",
+            "/",
+            host_header="192.168.1.199:18782",
+            source_address=("127.0.0.2", 0),
         )
         self.assertEqual(status, 403)
 
