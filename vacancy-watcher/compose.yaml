@@ -44,7 +44,9 @@ services:
       STOP_AFTER_SUCCESS: ${STOP_AFTER_SUCCESS:-true}
       WEBHOOK_URL: ${WEBHOOK_URL:-}
       UI_ALLOWED_HOSTS: ${UI_ALLOWED_HOSTS:-}
-      UI_ALLOWED_CLIENTS: ${UI_ALLOWED_CLIENTS:-}
+      # Docker rewrites host-originated published-port traffic to this fixed
+      # project gateway; retain it so loopback health/operator access works.
+      UI_ALLOWED_CLIENTS: ${UI_ALLOWED_CLIENTS:-10.89.0.1}
     ports:
       - "${WATCHER_BIND_ADDRESS:-127.0.0.1}:18782:8080"
     volumes:
