@@ -154,6 +154,7 @@ class Watcher:
         password = ""
         captcha = ""
         stage = "acquire_cycle_lock"
+        diagnostics: dict[str, int] = {}
         try:
             lock_path = Path(self.settings.data_path).parent / ".vacancy-watcher-cycle.lock"
             with ExclusiveFileLock(lock_path):
@@ -167,23 +168,33 @@ class Watcher:
                     stage = "open_login"
                     page.goto(
                         self.settings.list_url,
-                        wait_until="domcontentloaded",
+                        wait_until="commit",
                         timeout=90_000,
                     )
                     stage = "inspect_login"
                     form = page.locator("form#loginFormBean")
+                    form.wait_for(state="visible", timeout=90_000)
                     username_input = form.locator("input[name='username']")
                     password_input = form.locator("input[name='password']")
                     submit = form.locator("input[type='submit']")
                     captcha_container = page.locator("#divCaptcha_text:visible")
+                    captcha_container.wait_for(state="visible", timeout=90_000)
                     captcha_input = captcha_container.locator("input:visible")
+                    diagnostics = {
+                        "login_form_count": form.count(),
+                        "username_input_count": username_input.count(),
+                        "password_input_count": password_input.count(),
+                        "submit_input_count": submit.count(),
+                        "captcha_container_count": captcha_container.count(),
+                        "captcha_input_count": captcha_input.count(),
+                    }
                     if (
-                        form.count() != 1
-                        or username_input.count() != 1
-                        or password_input.count() != 1
-                        or submit.count() != 1
-                        or captcha_container.count() != 1
-                        or captcha_input.count() != 1
+                        diagnostics["login_form_count"] != 1
+                        or diagnostics["username_input_count"] != 1
+                        or diagnostics["password_input_count"] != 1
+                        or diagnostics["submit_input_count"] != 1
+                        or diagnostics["captcha_container_count"] != 1
+                        or diagnostics["captcha_input_count"] != 1
                     ):
                         raise PortalAuthRequired("exact interactive login form is not available")
                     stage = "capture_captcha"
@@ -229,6 +240,7 @@ class Watcher:
                 "portal_authentication_failed",
                 failure_kind=type(exc).__name__,
                 auth_stage=stage,
+                **diagnostics,
             )
             self._set_auth_flow("failed")
         finally:
