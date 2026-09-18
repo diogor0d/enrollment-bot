@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 from pathlib import Path
 import random
 import signal
@@ -40,6 +41,13 @@ class Watcher:
         self.logger = logger or JsonLogger()
         self.state = AtomicState(settings.data_path)
         self.notifier = Notifier(settings.webhook_url, self.state, self.logger)
+        self._interactive_auth_lock = threading.Lock()
+        self._interactive_auth_event = threading.Event()
+        self._interactive_auth_thread: threading.Thread | None = None
+        self._interactive_auth_status = "idle"
+        self._interactive_auth_captcha: str | None = None
+        self._interactive_auth_submission: tuple[str, str, str] | None = None
+        self._interactive_auth_deadline = 0.0
 
     def _record_failure(self, kind: str) -> None:
         def mutate(state: dict[str, Any]) -> None:
@@ -77,61 +85,133 @@ class Watcher:
             # A transient DOM failure is not evidence of authentication; later assertions decide.
             pass
 
-    def authenticate(self, username: str, password: str) -> str:
-        """Create a verified portal session without persisting credentials."""
+    def authentication_snapshot(self) -> dict[str, Any]:
+        with self._interactive_auth_lock:
+            return {
+                "status": self._interactive_auth_status,
+                "captcha": self._interactive_auth_captcha,
+                "expires_in": max(0, int(self._interactive_auth_deadline - time.monotonic())),
+            }
 
-        if not username or not password or len(username) > 256 or len(password) > 1024:
-            self.state.update(lambda value: value.__setitem__("auth_status", "failed"))
-            return "failed"
-        lock_path = Path(self.settings.data_path).parent / ".vacancy-watcher-cycle.lock"
-        try:
-            with ExclusiveFileLock(lock_path):
-                return self._authenticate_locked(username, password)
-        except LockHeldError:
-            return "busy"
-        finally:
-            # Best effort only: Python strings cannot be reliably zeroed.
-            username = ""
-            password = ""
+    def start_authentication(self) -> bool:
+        """Prepare one interactive portal session without collecting credentials."""
 
-    def _authenticate_locked(self, username: str, password: str) -> str:
+        with self._interactive_auth_lock:
+            if self._interactive_auth_thread is not None and self._interactive_auth_thread.is_alive():
+                return False
+            self._interactive_auth_status = "preparing"
+            self._interactive_auth_captcha = None
+            self._interactive_auth_submission = None
+            self._interactive_auth_deadline = 0.0
+            self._interactive_auth_event.clear()
+            self._interactive_auth_thread = threading.Thread(
+                target=self._interactive_auth_worker,
+                name="vacancy-watcher-interactive-auth",
+                daemon=True,
+            )
+            self._interactive_auth_thread.start()
+            return True
+
+    def submit_authentication(self, username: str, password: str, captcha: str) -> bool:
+        """Hand one user-solved challenge to the existing browser session."""
+
+        if (
+            not username
+            or not password
+            or not captcha
+            or len(username) > 256
+            or len(password) > 1024
+            or len(captcha) > 256
+        ):
+            return False
+        with self._interactive_auth_lock:
+            if self._interactive_auth_status != "challenge" or self._interactive_auth_submission is not None:
+                return False
+            self._interactive_auth_submission = (username, password, captcha)
+            self._interactive_auth_status = "submitting"
+            self._interactive_auth_event.set()
+            return True
+
+    def _set_auth_flow(self, status: str, captcha: str | None = None, deadline: float = 0.0) -> None:
+        with self._interactive_auth_lock:
+            self._interactive_auth_status = status
+            self._interactive_auth_captcha = captcha
+            self._interactive_auth_deadline = deadline
+
+    def _interactive_auth_worker(self) -> None:
         try:
             from playwright.sync_api import sync_playwright
         except ImportError:
             self.state.update(lambda value: value.__setitem__("auth_status", "failed"))
             self.logger.log("error", "portal_authentication_failed", failure_kind="playwright_missing")
-            return "failed"
+            self._set_auth_flow("failed")
+            return
 
         self.state.update(lambda value: value.__setitem__("auth_status", "authenticating"))
         context = None
         browser = None
+        username = ""
+        password = ""
+        captcha = ""
         try:
-            with sync_playwright() as playwright:
-                browser = playwright.chromium.launch(headless=True)
-                context = browser.new_context()
-                page = context.new_page()
-                page.goto(self.settings.list_url, wait_until="domcontentloaded")
-                username_input = page.locator("form#loginFormBean input[name='username']")
-                password_input = page.locator("form#loginFormBean input[name='password']")
-                submit = page.locator("form#loginFormBean input[type='submit']")
-                if username_input.count() != 1 or password_input.count() != 1 or submit.count() != 1:
-                    raise PortalAuthRequired("exact login form is not available")
-                username_input.fill(username)
-                password_input.fill(password)
-                submit.click()
-                page.wait_for_load_state("domcontentloaded")
-                page.goto(self.settings.list_url, wait_until="domcontentloaded")
-                self._authenticated_page(page)
-                find_course_link(page, self.settings)
-                write_json_secure_atomic(Path(self.settings.storage_state_path), context.storage_state())
-                self.state.update(lambda value: value.__setitem__("auth_status", "valid"))
-                self.logger.log("info", "portal_authentication_succeeded")
-                return "valid"
+            lock_path = Path(self.settings.data_path).parent / ".vacancy-watcher-cycle.lock"
+            with ExclusiveFileLock(lock_path):
+                with sync_playwright() as playwright:
+                    browser = playwright.chromium.launch(headless=True)
+                    context = browser.new_context()
+                    page = context.new_page()
+                    page.goto(self.settings.list_url, wait_until="domcontentloaded")
+                    form = page.locator("form#loginFormBean")
+                    username_input = form.locator("input[name='username']")
+                    password_input = form.locator("input[name='password']")
+                    submit = form.locator("input[type='submit']")
+                    captcha_container = page.locator("#divCaptcha_text:visible")
+                    captcha_input = captcha_container.locator("input:visible")
+                    if (
+                        form.count() != 1
+                        or username_input.count() != 1
+                        or password_input.count() != 1
+                        or submit.count() != 1
+                        or captcha_container.count() != 1
+                        or captcha_input.count() != 1
+                    ):
+                        raise PortalAuthRequired("exact interactive login form is not available")
+                    challenge_png = captcha_container.screenshot(type="png")
+                    challenge = "data:image/png;base64," + base64.b64encode(challenge_png).decode("ascii")
+                    deadline = time.monotonic() + 300
+                    self._set_auth_flow("challenge", challenge, deadline)
+                    self.state.update(lambda value: value.__setitem__("auth_status", "challenge_required"))
+                    if not self._interactive_auth_event.wait(300):
+                        raise PortalAuthRequired("interactive authentication expired")
+                    with self._interactive_auth_lock:
+                        submission = self._interactive_auth_submission
+                        self._interactive_auth_submission = None
+                    if submission is None:
+                        raise PortalAuthRequired("interactive authentication was not supplied")
+                    username, password, captcha = submission
+                    username_input.fill(username)
+                    password_input.fill(password)
+                    captcha_input.fill(captcha)
+                    submit.click()
+                    page.wait_for_load_state("domcontentloaded")
+                    page.goto(self.settings.list_url, wait_until="domcontentloaded")
+                    self._authenticated_page(page)
+                    find_course_link(page, self.settings)
+                    write_json_secure_atomic(Path(self.settings.storage_state_path), context.storage_state())
+                    self.state.update(lambda value: value.__setitem__("auth_status", "valid"))
+                    self.logger.log("info", "portal_authentication_succeeded")
+                    self._set_auth_flow("valid")
         except Exception as exc:
             self.state.update(lambda value: value.__setitem__("auth_status", "failed"))
             self.logger.log("warning", "portal_authentication_failed", failure_kind=type(exc).__name__)
-            return "failed"
+            self._set_auth_flow("failed")
         finally:
+            username = ""
+            password = ""
+            captcha = ""
+            with self._interactive_auth_lock:
+                self._interactive_auth_submission = None
+            self._interactive_auth_event.clear()
             if context is not None:
                 try:
                     context.close()

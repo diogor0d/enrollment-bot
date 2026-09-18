@@ -115,7 +115,14 @@ def main(argv: list[str] | None = None) -> int:
                     return result
                 time.sleep(1)
 
-        app = ManagementApp(settings, watcher.state, check_now, watcher.authenticate)
+        app = ManagementApp(
+            settings,
+            watcher.state,
+            check_now=check_now,
+            auth_start=watcher.start_authentication,
+            auth_snapshot=watcher.authentication_snapshot,
+            auth_submit=watcher.submit_authentication,
+        )
         server = create_server(settings.ui_host, settings.ui_port, app)
         server_thread = threading.Thread(
             target=server.serve_forever,

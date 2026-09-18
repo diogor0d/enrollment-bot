@@ -207,25 +207,34 @@ class ManagementWebTests(WebFixture):
         self.assertEqual(status, 403)
         self.assertFalse(self.state.read().get("enrollment_armed", False))
 
-    def test_authentication_requires_tls_and_runs_asynchronously_without_echoing_credentials(self):
+    def test_two_stage_authentication_requires_tls_and_never_echoes_credentials(self):
         _, _, _, cookie, token = self.get_dashboard()
-        body = f"csrf={token}&username=test-user&password=test-password"
-        status, _, response = self.request("POST", "/authenticate", body=body, cookie=cookie)
+        status, _, response = self.request("POST", "/auth/start", body=f"csrf={token}", cookie=cookie)
         self.assertEqual(status, 426)
-        self.assertNotIn("test-user", response)
-        self.assertNotIn("test-password", response)
 
         received = []
-        started = threading.Event()
-        release = threading.Event()
+        flow = {"status": "idle", "captcha": None, "expires_in": 0}
 
-        def authenticate(username, password):
-            received.append((username, password))
-            started.set()
-            release.wait(2)
-            return "valid"
+        def start_authentication():
+            flow.update(
+                {
+                    "status": "challenge",
+                    "captcha": "data:image/png;base64,dGVzdA==",
+                    "expires_in": 300,
+                }
+            )
+            return True
 
-        self.app.authenticate = authenticate
+        def submit_authentication(username, password, captcha):
+            if flow["status"] != "challenge":
+                return False
+            received.append((username, password, captcha))
+            flow.update({"status": "submitting", "captcha": None, "expires_in": 0})
+            return True
+
+        self.app.auth_start = start_authentication
+        self.app.auth_snapshot = lambda: dict(flow)
+        self.app.auth_submit = submit_authentication
         self.app.settings = Settings(
             mode="enroll",
             enable_enrollment=True,
@@ -236,25 +245,41 @@ class ManagementWebTests(WebFixture):
         )
         status, _, response = self.request(
             "POST",
-            "/authenticate",
-            body=body,
+            "/auth/start",
+            body=f"csrf={token}",
             cookie=cookie,
+            origin_scheme="https",
+        )
+        self.assertEqual(status, 303)
+        status, headers, challenge_page = self.request("GET", "/")
+        self.assertEqual(status, 200)
+        self.assertIn('src="data:image/png;base64,dGVzdA=="', challenge_page)
+        self.assertIn('action="/auth/submit"', challenge_page)
+        submit_cookie = headers.get("set-cookie", cookie).split(";", 1)[0]
+        submit_token = re.search(r'name="csrf" value="([^"]+)"', challenge_page).group(1)
+        body = (
+            f"csrf={submit_token}&username=test-user&password=test-password&captcha=human-answer"
+        )
+        status, _, response = self.request(
+            "POST",
+            "/auth/submit",
+            body=body,
+            cookie=submit_cookie,
             origin_scheme="https",
         )
         self.assertEqual(status, 303)
         self.assertNotIn("test-user", response)
         self.assertNotIn("test-password", response)
-        self.assertTrue(started.wait(1))
-        self.assertEqual(received, [("test-user", "test-password")])
+        self.assertNotIn("human-answer", response)
+        self.assertEqual(received, [("test-user", "test-password", "human-answer")])
         status, _, _ = self.request(
             "POST",
-            "/authenticate",
+            "/auth/submit",
             body=body,
-            cookie=cookie,
+            cookie=submit_cookie,
             origin_scheme="https",
         )
         self.assertEqual(status, 409)
-        release.set()
 
     def test_check_and_arm_refuse_while_monitoring_is_paused(self):
         self.state.set_monitoring_enabled(False)

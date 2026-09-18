@@ -116,14 +116,20 @@ submission that has already reached the durable `submitting` state. A latched
 manual-intervention state cannot be cleared from the console; verify the
 authoritative enrollment list before repairing state on the host.
 
-When `TLS_ENABLED=true`, the console also provides **Connect university
-account** fields. The username and password are submitted only to this watcher,
-used once by a fresh headless browser to log in at the fixed UC HTTPS origin,
-and then discarded. Only the resulting Playwright session state is written to
-`/data/auth-state.json`. A failed login never replaces a previous session.
-Never enable this form over plain HTTP. The deployment certificate must be
-trusted on the authorized client before entering credentials; do not bypass a
-browser certificate warning.
+When `TLS_ENABLED=true`, the console provides a two-stage **university login**
+flow. **Prepare university login** first opens a fresh headless browser at the
+fixed UC HTTPS origin without collecting credentials. If the portal presents
+its text CAPTCHA, the watcher captures that challenge and displays it in the
+console. The operator then enters the university username, password, and the
+CAPTCHA response. Those three values are handed once to the same waiting
+browser session, cleared from process memory after use, and never written to
+disk or logs. The challenge expires after five minutes. Only an independently
+verified Playwright session state is atomically written to
+`/data/auth-state.json`; a failed login never replaces a previous session.
+The watcher does not solve or bypass CAPTCHAs. Never enable this form over
+plain HTTP. The deployment certificate must be trusted on the authorized
+client before entering credentials; do not bypass a browser certificate
+warning.
 
 To explicitly enable autonomous enrollment, supply all gates for that command
 or service and review the risk first:

@@ -37,12 +37,13 @@ class ManagementApp:
     settings: Settings
     state: AtomicState
     check_now: Callable[[], Any] | None = None
-    authenticate: Callable[[str, str], str] | None = None
+    auth_start: Callable[[], bool] | None = None
+    auth_snapshot: Callable[[], dict[str, Any]] | None = None
+    auth_submit: Callable[[str, str, str], bool] | None = None
 
     def __post_init__(self) -> None:
         self._operation_lock = threading.Lock()
         self._check_running = False
-        self._auth_running = False
 
     @property
     def check_running(self) -> bool:
@@ -55,7 +56,11 @@ class ManagementApp:
         if self.check_now is None:
             return False
         with self._operation_lock:
-            if self._check_running or self._auth_running:
+            if self._check_running or self.authentication_snapshot()["status"] in {
+                "preparing",
+                "challenge",
+                "submitting",
+            }:
                 return False
             self._check_running = True
 
@@ -74,39 +79,37 @@ class ManagementApp:
         thread.start()
         return True
 
-    @property
-    def auth_running(self) -> bool:
-        with self._operation_lock:
-            return self._auth_running
+    def authentication_snapshot(self) -> dict[str, Any]:
+        """Return only non-secret state from the active portal login flow."""
 
-    def start_authentication(self, username: str, password: str) -> bool:
-        """Use credentials once in a background login and retain no app copy."""
+        if self.auth_snapshot is None:
+            return {"status": "idle", "captcha": None, "expires_in": 0}
+        try:
+            snapshot = self.auth_snapshot()
+        except Exception:
+            return {"status": "failed", "captcha": None, "expires_in": 0}
+        return {
+            "status": str(snapshot.get("status", "failed")),
+            "captcha": snapshot.get("captcha"),
+            "expires_in": max(0, int(snapshot.get("expires_in", 0))),
+        }
 
-        if self.authenticate is None:
+    def start_authentication(self) -> bool:
+        """Prepare a browser session before any credentials are collected."""
+
+        if self.auth_start is None:
             return False
         with self._operation_lock:
-            if self._auth_running or self._check_running:
+            if self._check_running:
                 return False
-            self._auth_running = True
+            return self.auth_start()
 
-        def run() -> None:
-            nonlocal username, password
-            result = "failed"
-            try:
-                result = self.authenticate(username, password)
-            except Exception:
-                self.state.update(lambda value: value.__setitem__("auth_status", "failed"))
-            finally:
-                username = ""
-                password = ""
-                with self._operation_lock:
-                    self._auth_running = False
-                if result == "valid":
-                    self.start_check_now()
+    def submit_authentication(self, username: str, password: str, captcha: str) -> bool:
+        """Pass credentials and the user-solved CAPTCHA to the waiting session."""
 
-        thread = threading.Thread(target=run, name="vacancy-watcher-auth", daemon=True)
-        thread.start()
-        return True
+        if self.auth_submit is None:
+            return False
+        return self.auth_submit(username, password, captcha)
 
 
 class ManagementServer(ThreadingHTTPServer):
@@ -183,7 +186,9 @@ def _page_html(settings: Settings, state: dict[str, Any], csrf_token: str, messa
     manual = bool(_state_value(state, "manual_intervention", False))
     vacancy = str(_state_value(state, "vacancy_status", "unknown"))
     enrollment = str(_state_value(state, "enrollment_status", "idle"))
-    auth_status = "authenticating" if bool(state.get("auth_running")) else str(_state_value(state, "auth_status", "unknown"))
+    auth_flow = state.get("auth_flow", {})
+    auth_flow_status = str(auth_flow.get("status", "idle"))
+    auth_status = str(_state_value(state, "auth_status", "unknown"))
     last_result = str(_state_value(state, "last_result", "never_run"))
     failures = _state_value(state, "failure_count", 0)
     last_cycle = _utc_timestamp(_state_value(state, "last_cycle_epoch", 0))
@@ -197,6 +202,32 @@ def _page_html(settings: Settings, state: dict[str, Any], csrf_token: str, messa
     if manual:
         safety_label = "Manual intervention required"
         safety_class = "danger"
+    if auth_flow_status == "challenge":
+        captcha = str(auth_flow.get("captcha") or "")
+        auth_control = f"""
+        <form method="post" action="/auth/submit">
+          <input type="hidden" name="csrf" value="{_escape(csrf_token)}">
+          <div class="captcha"><img src="{_escape(captcha)}" alt="University CAPTCHA challenge"></div>
+          <label for="portal-username">University username</label>
+          <input id="portal-username" name="username" type="text" autocomplete="username" maxlength="256" required>
+          <label for="portal-password">University password</label>
+          <input id="portal-password" name="password" type="password" autocomplete="current-password" maxlength="1024" required>
+          <label for="portal-captcha">CAPTCHA response</label>
+          <input id="portal-captcha" name="captcha" type="text" autocomplete="off" maxlength="256" required>
+          <button type="submit">Connect university account</button>
+        </form>
+        <p class="fine">This challenge expires in about {_escape(auth_flow.get('expires_in', 0))} seconds. Credentials and the CAPTCHA response are handed once to the waiting browser session and are not written to disk.</p>"""
+    elif auth_flow_status in {"preparing", "submitting"}:
+        label = "Preparing secure login…" if auth_flow_status == "preparing" else "Verifying university login…"
+        auth_control = f'<button type="button" disabled>{label}</button><p class="fine">Refresh this page shortly. No credentials have been retained by the console.</p>'
+    else:
+        label = "Start new university login" if auth_flow_status in {"failed", "valid"} else "Prepare university login"
+        auth_control = f"""
+        <form method="post" action="/auth/start">
+          <input type="hidden" name="csrf" value="{_escape(csrf_token)}">
+          <button type="submit" {'disabled' if not settings.tls_enabled else ''}>{label}</button>
+        </form>
+        <p class="fine">The watcher first opens the fixed university login page. If the portal requests a CAPTCHA, it is shown here for you to solve. Authentication is accepted only over HTTPS.</p>"""
 
     return f"""<!doctype html>
 <html lang="en">
@@ -258,6 +289,8 @@ def _page_html(settings: Settings, state: dict[str, Any], csrf_token: str, messa
     input[type=text], input[type=password] {{ width: 100%; border: 1px solid #aebbd0; border-radius: .35rem; padding: .65rem .7rem; color: var(--ink); background: white; }}
     .notice {{ background: var(--green-wash); border: 1px solid #b7dfcc; color: var(--green); padding: .75rem 1rem; margin: 0 0 1rem; font-size: .9rem; }}
     .warning {{ background: var(--amber-wash); border: 1px solid #eed2b0; color: #77451d; padding: .8rem 1rem; margin-top: 1rem; font-size: .88rem; }}
+    .captcha {{ margin: 1rem 0 .25rem; padding: .75rem; border: 1px solid var(--line); background: #f2f5fa; text-align: center; }}
+    .captcha img {{ display: inline-block; max-width: 100%; height: auto; }}
     .fine {{ color: var(--slate); font-size: .78rem; margin: 1rem 0 0; }}
     :focus-visible {{ outline: 3px solid #6f96ff; outline-offset: 3px; }}
     @media (max-width: 760px) {{ .top {{ display: block; padding-top: 2.5rem; }} .stamp {{ text-align: left; margin-top: 1.25rem; }} .grid {{ grid-template-columns: 1fr; }} .rail-step {{ min-height: 104px; padding: .8rem; }} .details {{ grid-template-columns: 1fr; }} }}
@@ -304,15 +337,7 @@ def _page_html(settings: Settings, state: dict[str, Any], csrf_token: str, messa
           <li><span>Enrollment state</span><span class="pill {safety_class}">{_escape(safety_label)}</span></li>
           <li><span>Last enrollment result</span><span class="pill muted">{_escape(enrollment)}</span></li>
         </ul>
-        <form method="post" action="/authenticate">
-          <input type="hidden" name="csrf" value="{_escape(csrf_token)}">
-          <label for="portal-username">University username</label>
-          <input id="portal-username" name="username" type="text" autocomplete="username" maxlength="256" required {'disabled' if not settings.tls_enabled or state.get('auth_running') else ''}>
-          <label for="portal-password">University password</label>
-          <input id="portal-password" name="password" type="password" autocomplete="current-password" maxlength="1024" required {'disabled' if not settings.tls_enabled or state.get('auth_running') else ''}>
-          <button type="submit" {'disabled' if not settings.tls_enabled or state.get('auth_running') else ''}>{'Connecting…' if state.get('auth_running') else 'Connect university account'}</button>
-        </form>
-        <p class="fine">Credentials are used once to create the portal session and are not written to disk. Authentication is accepted only over HTTPS.</p>
+        {auth_control}
         <div class="actions">
           <form method="post" action="/{'pause' if monitoring else 'resume'}"><input type="hidden" name="csrf" value="{_escape(csrf_token)}"><button class="secondary" type="submit">{'Pause monitoring' if monitoring else 'Resume monitoring'}</button></form>
           <form method="post" action="/check-now"><input type="hidden" name="csrf" value="{_escape(csrf_token)}"><button type="submit" {'disabled' if not monitoring else ''}>Check now</button></form>
@@ -344,7 +369,7 @@ class ManagementHandler(BaseHTTPRequestHandler):
     def _security_headers(self) -> dict[str, str]:
         headers = {
             "Cache-Control": "no-store",
-            "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
+            "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; img-src data:; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
             "Referrer-Policy": "no-referrer",
             "X-Content-Type-Options": "nosniff",
             "X-Frame-Options": "DENY",
@@ -481,7 +506,7 @@ class ManagementHandler(BaseHTTPRequestHandler):
             self._send(HTTPStatus.SERVICE_UNAVAILABLE, "State is unavailable.")
             return
         state["check_running"] = self.app.check_running
-        state["auth_running"] = self.app.auth_running
+        state["auth_flow"] = self.app.authentication_snapshot()
         message = parse_qs(urlsplit(self.path).query).get("message", [""])[0]
         headers = {"Set-Cookie": self._set_cookie(token)} if new_cookie else None
         self._send(HTTPStatus.OK, _page_html(self.app.settings, state, token, message=message), headers=headers)
@@ -494,7 +519,7 @@ class ManagementHandler(BaseHTTPRequestHandler):
             self._post_error(HTTPStatus.FORBIDDEN, "Management access denied.")
             return
         path = urlsplit(self.path).path
-        if path not in {"/pause", "/resume", "/check-now", "/authenticate", "/arm", "/disarm"}:
+        if path not in {"/pause", "/resume", "/check-now", "/auth/start", "/auth/submit", "/arm", "/disarm"}:
             self._post_error(HTTPStatus.NOT_FOUND, "Not found")
             return
         if not self._same_origin():
@@ -531,21 +556,38 @@ class ManagementHandler(BaseHTTPRequestHandler):
                     self._post_error(HTTPStatus.CONFLICT, "A check is already running or no callback is configured.")
                     return
                 message = "Check started in the background."
-            elif path == "/authenticate":
+            elif path == "/auth/start":
+                if not self.app.settings.tls_enabled:
+                    self._post_error(HTTPStatus.UPGRADE_REQUIRED, "Authentication requires HTTPS.")
+                    return
+                if not self.app.start_authentication():
+                    self._post_error(HTTPStatus.CONFLICT, "Authentication or a portal check is already running.")
+                    return
+                message = "Secure university login is being prepared. Refresh shortly to see the challenge."
+            elif path == "/auth/submit":
                 if not self.app.settings.tls_enabled:
                     self._post_error(HTTPStatus.UPGRADE_REQUIRED, "Authentication requires HTTPS.")
                     return
                 username = form.pop("username", "")
                 password = form.pop("password", "")
-                if not username or not password or len(username) > 256 or len(password) > 1024:
-                    self._post_error(HTTPStatus.BAD_REQUEST, "Username and password are required.")
+                captcha = form.pop("captcha", "")
+                if (
+                    not username
+                    or not password
+                    or not captcha
+                    or len(username) > 256
+                    or len(password) > 1024
+                    or len(captcha) > 256
+                ):
+                    self._post_error(HTTPStatus.BAD_REQUEST, "Username, password, and CAPTCHA response are required.")
                     return
-                if not self.app.start_authentication(username, password):
-                    self._post_error(HTTPStatus.CONFLICT, "Authentication or a portal check is already running.")
+                if not self.app.submit_authentication(username, password, captcha):
+                    self._post_error(HTTPStatus.CONFLICT, "The login challenge is absent, expired, or already submitted.")
                     return
                 username = ""
                 password = ""
-                message = "Authentication started. Refresh shortly to see the result."
+                captcha = ""
+                message = "University login submitted. Refresh shortly to see the verified result."
             elif path == "/disarm":
                 self.app.state.set_enrollment_armed(False)
                 message = "Enrollment disarmed."
