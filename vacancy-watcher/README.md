@@ -114,6 +114,9 @@ Compose runs as the image's unprivileged `pwuser`, drops all capabilities,
 sets `no-new-privileges`, uses a read-only root filesystem and private 256 MiB
 shared memory, bounds processes/CPU/memory/logs, and exposes only the
 loopback-bound management port.
+The dedicated Compose network uses `10.89.0.0/28`, selected after checking the
+target host's Docker subnets and IPv4 routes. Revalidate that it does not
+overlap before deploying this Compose file to a different host.
 Only `/data` and `/tmp` are writable. A health check detects a stalled polling
 loop or a latched manual-intervention state. Run only this trusted portal
 workflow and do not add unrelated browsing to the service.

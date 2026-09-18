@@ -46,3 +46,9 @@ services:
       - "127.0.0.1:18782:8080"
     volumes:
       - ./data:/data
+
+networks:
+  default:
+    ipam:
+      config:
+        - subnet: 10.89.0.0/28
