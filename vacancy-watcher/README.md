@@ -90,7 +90,7 @@ For a reviewed single-client LAN deployment, set all three values together:
 ```text
 WATCHER_BIND_ADDRESS=<server-lan-ip>
 UI_ALLOWED_HOSTS=<server-lan-ip>
-UI_ALLOWED_CLIENTS=10.89.0.1,<client-lan-ip>
+UI_ALLOWED_CLIENTS=<client-lan-ip>
 ```
 
 Bind only the server's specific LAN address, never `0.0.0.0`. Before changing
@@ -103,11 +103,12 @@ user authentication: anyone controlling or spoofing the allowed client can
 reach the console. Do not expose it through Cloudflare, a reverse proxy, or the
 public Internet without a separately reviewed authentication layer.
 
-`10.89.0.1` is the fixed gateway of this Compose project's dedicated network.
-Docker uses it as the source address for requests originating on the host, so
-retain it in `UI_ALLOWED_CLIENTS` to preserve loopback health/operator access.
-It does not authorize a routed LAN client, whose original source address is
-evaluated separately.
+`10.89.0.1` is the fixed gateway of this Compose project's dedicated network
+and is retained only by the default loopback deployment so host-originated
+health/operator requests work. Override `UI_ALLOWED_CLIENTS` with only the
+approved LAN client addresses when using a LAN bind; otherwise traffic from
+other local Docker networks can be masqueraded as that gateway and pass the
+application allowlist.
 
 The console can pause or resume future cycles, request an immediate check, and
 arm or disarm the one-shot enrollment path. Pausing does not interrupt a
